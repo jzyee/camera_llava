@@ -13,59 +13,54 @@ from PIL import Image
 from torchvision.io import read_video
 from torchvision.transforms import functional as F
 from transformers import pipeline
-
+import torch
 
 # Define the first layout in its own class
 class PredictWorker(QThread):
     # Define a signal to send the result back to the main thread
     resultReady = pyqtSignal(str)
 
-    def __init__(self, userInput, model, img):
+    def __init__(self, userInput, pipe, img):
         super().__init__()
         self.userInput = userInput
         self.img = img
         self.processed_prompt = self.process_prompt()
-        self.model = model
+        self.pipe = pipe
         
 
-    def process_img(self):
+    def process_img(self, img):
             # encoded_string = base64.b64encode(self.img).decode('utf-8')
             # return f"data:image/jpeg;base64,{encoded_string}"
        
-            with open("temp.jpg", "rb") as image_file:
-                encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
-                return f"data:image/jpeg;base64,{encoded_string}"
+            return Image.fromarray(img)
     
     def process_prompt(self):
+
+        return f"USER: <image>\n{self.prompt} Reply with only yes or no\nASSISTANT:"
         
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": self.process_img(),
-                        },
-                    },
-                    {"type": "text", "text": f"{self.userInput}"},
-                ],
-            }
-        ]
-        return messages
+    def process_model_input(self):
+        found = False
+        proc_prompt = self.process_prompt()
+        proc_img = self.process_img(self.img)
+        outputs = self.pipe(proc_img, 
+                      prompt=proc_prompt, 
+                      generate_kwargs={"max_new_tokens": 10})
         
+        if len(outputs[0]['generated_text']) > 0:
+            model_response = outputs[0]['generated_text'].split('ASSISTANT:')[1]
+            return model_response
+        
+        else:
+            return None
 
 
     def run(self):
         # Placeholder for a long-running prediction model
         # Simulate a delay to mimic a time-consuming task
-        response = self.model.chat.completions.create(
-            model="gpt-4-vision-preview",
-            messages=self.processed_prompt
-        )
+        response = self.process_model_input()
         # print(output)
         # result = output
-        result = f"'{response.choices[0].message.content}'"
+        result = f"'{response}'"
          # Simulate a long task
         self.resultReady.emit(result)
 
@@ -73,16 +68,18 @@ class PredictWorker(QThread):
 class AlertWorker(QThread):
     caption_signal = pyqtSignal(str, float)  # Signal to emit the caption
     
-    def __init__(self, userInput, model, img):
+    def __init__(self, userInput, model, frame, library):
         super().__init__()
+        self.library = library
         self.framesQueue = queue.Queue()
         self.running=True
-        self.img = img
+        self.frame = frame
         self.userInput = userInput
         # self.processed_prompt = self.process_prompt()
         self.model = model
         self.timeOfSampling = time.time()
-        self.frame = None
+        
+        
 
     # @pyqtSlot(np.ndarray)
     def add_frame(self, frame):
@@ -96,34 +93,47 @@ class AlertWorker(QThread):
         self.wait()
     
     def process_img(self):
-            # encoded_string = base64.b64encode(self.img).decode('utf-8')
-            # return f"data:image/jpeg;base64,{encoded_string}"
+        if self.library == "llama-cpp":
+        # encoded_string = base64.b64encode(self.img).decode('utf-8')
+        # return f"data:image/jpeg;base64,{encoded_string}"
             retval, buffer = cv2.imencode('.jpg', self.frame)
 
             if retval:
                 jpg_as_text = base64.b64encode(buffer)
                 jpg_as_str = jpg_as_text.decode('utf-8')
                 return f"data:image/jpeg;base64,{jpg_as_str}"
-            
-            return None
+        
+        if self.library == "pytorch":
+            frame_rgb = cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB)
+            return Image.fromarray(frame_rgb)
+        
+        return None
     
     def process_prompt(self):
         
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": self.process_img(),
+        if self.library == "llama-cpp":
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": self.process_img(),
+                            },
                         },
-                    },
-                    {"type": "text", "text": f"{self.userInput}"},
-                ],
-            }
-        ]
-        return messages
+                        {"type": "text", "text": f"{self.userInput}"},
+                    ],
+                }
+            ]
+            return messages
+        
+        elif self.library == "pytorch":
+            self.frame = self.process_img()
+            return f"USER: <image>\n{self.userInput} Reply with only yes or no\nASSISTANT:"
+
+        else:
+            return None
         
 
 
@@ -135,37 +145,54 @@ class AlertWorker(QThread):
                 frame, timestamp = self.framesQueue.get()
                 self.frame = frame
                 self.processed_prompt = self.process_prompt()
-                response = self.model.chat.completions.create(
-                    model="gpt-4-vision-preview",
-                    messages=self.processed_prompt,
-                    max_tokens=30,
-                    temperature=0.4,
-                    top_p=0.4
-                )
-                # print(output)
-                # result = output
-                caption = f"'{response.choices[0].message.content}'"
+
+                if self.library == "llama-cpp":
+                    response = self.model.chat.completions.create(
+                        model="gpt-4-vision-preview",
+                        messages=self.processed_prompt,
+                        max_tokens=30,
+                        temperature=0.4,
+                        top_p=0.4
+                    )
+                    # print(output)
+                    # result = output
+                    caption = f"'{response.choices[0].message.content}'"
+
+
+                elif self.library == "pytorch":
+                    # this is a pytorch pipe
+                    # frame_to_pil = F.to_pil_image(self.frame.permute(2,0,1)) if self.frame.dim() == 3 else F.to_pil_image(self.frame)
+
+                    outputs = self.model(self.frame, 
+                      prompt=self.processed_prompt, 
+                      generate_kwargs={"max_new_tokens": 25})
+                    caption = outputs[0]['generated_text'].split('ASSISTANT:')[1]
                 # Simulate a long task
                 self.caption_signal.emit(caption, timestamp)
     
 
 class AlertSystem(QWidget):
-    def __init__(self):
+    def __init__(self, pipe, library):
         super().__init__()
-        self.initUI()
-        self.initVideoStream()
-        self.model = self.initModel()
-        self.initPredictWorker()
+        
+        # self.model = self.initModel()
+        self.pipe = pipe
         self.alertSystemEnabled = False
         self.triggerWords = {"knife", "dangerous", "smoking"}
         self.lastProcessedTime = time.time()
         self.samplingInterval = 10
+        self.library = library
 
-        
+        self.initUI()
+        self.initVideoStream()
+        self.initPredictWorker()
 
-    def initModel(self):
-        client = OpenAI(base_url="http://localhost:8000/v1", api_key="sk-1234")
-        return client
+
+
+
+    # def initModel(self):
+    #     client = OpenAI(base_url="http://localhost:8000/v1", api_key="sk-1234")
+    #     return client
 
     def initUI(self):
         self.gridLayout = QVBoxLayout()
@@ -215,7 +242,7 @@ class AlertSystem(QWidget):
         self.timer.start(20)
 
     def initPredictWorker(self):
-        self.predictWorker = AlertWorker(self.prompt, self.model, self.displayImage)
+        self.predictWorker = AlertWorker(self.prompt, self.pipe, self.displayImage, self.library)
         self.predictWorker.caption_signal.connect(self.updateCaption)
 
     def toggleAlertSystem(self, state):
@@ -305,17 +332,16 @@ class AlertSystem(QWidget):
 
 
 
-class VideoPlayer(QWidget):
-    def __init__(self):
+class QASystem(QWidget):
+    def __init__(self, pipe, library):
         super().__init__()
+        
+        self.library = library
+        self.evalFrame = None
+        self.pipe = pipe
+
         self.initUI()
         self.initVideoStream()
-        self.model = self.initModel()
-        self.evalFrame = None
-
-    def initModel(self):
-        client = OpenAI(base_url="http://localhost:8000/v1", api_key="sk-1234")
-        return client
 
     def initUI(self):
         # Initialize grid layout
@@ -492,24 +518,22 @@ class ResultEmitter(QObject):
 
 
 # Define the second layout in its own class
-class SearchVid(QWidget):
-    def __init__(self):
+class SearchVidSystem(QWidget):
+    def __init__(self, pipe, library):
         super().__init__()
-        self.initUI()
-        self.initVideoStream()
-        # self.model = self.initModel()
+        self.library = library
+        self.pipe = pipe
         self.evalFrame = None
         # init the list to store the frames
         self.results = [] 
         self.interval_seconds = 1
         num_workers = 4
         self.threadPool = QThreadPool()
-        self.initModel()
 
-    def initModel(self):
-        # init pipeline
-        model_id = "./tinyllava-v1.0-1.1b-hf"
-        self.pipe = pipeline("image-to-text", model=model_id)
+        self.initUI()
+        self.initVideoStream()
+
+    
 
     def initUI(self):
         # Initialize grid layout
@@ -697,6 +721,10 @@ class MainWindow(QWidget):
         self.setWindowTitle("PyQt5 Navigation Example")
         self.setGeometry(100, 100, 800, 600)
 
+        self.library = "pytorch"
+        # init the model to be used in all 3 tabs
+        self.initModel()
+
         # Main layout
         mainLayout = QHBoxLayout(self)
 
@@ -711,9 +739,9 @@ class MainWindow(QWidget):
         self.stackedWidget = QStackedWidget()
 
         # Add layouts to stacked widget
-        self.layoutOne = AlertSystem()
-        self.layoutTwo = SearchVid()
-        self.layoytThree = VideoPlayer()
+        self.layoutOne = AlertSystem(self.pipe, self.library)
+        self.layoutTwo = SearchVidSystem(self.pipe, self.library)
+        self.layoytThree = QASystem(self.pipe, self.library)
         self.stackedWidget.addWidget(self.layoutOne)
         self.stackedWidget.addWidget(self.layoutTwo)
         self.stackedWidget.addWidget(self.layoytThree)
@@ -730,6 +758,20 @@ class MainWindow(QWidget):
 
         # Connect navigation changes to display function
         self.navList.currentRowChanged.connect(self.display)
+
+    def initModel(self):
+        if self.library == "pytorch":
+
+            if torch.backends.mps.is_available():
+                mps_device = torch.device("mps")
+                x = torch.ones(1, device=mps_device)
+                print (x)
+            else:
+                print ("MPS device not found.")
+
+            # init pipeline
+            model_id = "./tinyllava-v1.0-1.1b-hf"
+            self.pipe = pipeline("image-to-text", model=model_id)
 
     def display(self, index):
         # Change the displayed widget
