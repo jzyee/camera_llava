@@ -444,40 +444,74 @@ class VideoPlayer(QWidget):
 class SearchProcessorTask(QRunnable):
     # this function is to process a frame concurrently
 
-    def __init__(self, frame, pipe, prompt, i, fps, resultEmitter):
+    def __init__(self, frame, model, prompt, i, fps, resultEmitter):
         super().__init__()
         self.frame = frame
-        self.pipe = pipe
+        self.model = model
         self.prompt = prompt
         self.i = i
         self.resultEmitter = resultEmitter
         self.fps = fps
 
-    def search_frame(self, frame, pipe, prompt):
+    def process_img(self):
+            # encoded_string = base64.b64encode(self.img).decode('utf-8')
+            # return f"data:image/jpeg;base64,{encoded_string}"
+            retval, buffer = cv2.imencode('.jpg', self.frame.numpy())
+
+            if retval:
+                jpg_as_text = base64.b64encode(buffer)
+                jpg_as_str = jpg_as_text.decode('utf-8')
+                return f"data:image/jpeg;base64,{jpg_as_str}"
+            
+            return None
+
+    
+
+
+    def process_prompt(self):
+        
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": self.process_img(),
+                        },
+                    },
+                    {"type": "text", "text": f"{self.prompt}"},
+                ],
+            }
+        ]
+        return messages
+    
+
+    def search_frame(self):
         found = False
         proc_prompt = self.process_prompt()
-        outputs = pipe(frame, 
-                      prompt=proc_prompt, 
-                      generate_kwargs={"max_new_tokens": 5})
-        
-        if len(outputs[0]['generated_text']) > 0:
-            model_response = outputs[0]['generated_text'].split('ASSISTANT:')[1]
+        response = self.model.chat.completions.create(
+                    model="gpt-4-vision-preview",
+                    messages=proc_prompt,
+                    max_tokens=30,
+                    temperature=0.4,
+                    top_p=0.4
+                )
+        answer = response.choices[0].message.content
+        if len(answer) > 0:
+            model_response = answer#.split('ASSISTANT:')[1]
+            print(model_response)
             if 'yes' in model_response.lower():
                 found =  True
         
         return found
-
-
-    def process_prompt(self):
-
-        return f"USER: <image>\n{self.prompt} Reply with only yes or no\nASSISTANT:"
 
     def run(self):
         
         timestamp = self.i / self.fps
         frame_to_pil = F.to_pil_image(self.frame.permute(2,0,1)) if self.frame.dim() == 3 else F.to_pil_image(self.frame)
 
-        pred = self.search_frame(frame_to_pil, self.pipe, self.prompt)
+        pred = self.search_frame()
 
         processed_results = {
             "timestamp": timestamp,
@@ -504,12 +538,11 @@ class SearchVid(QWidget):
         self.interval_seconds = 1
         num_workers = 4
         self.threadPool = QThreadPool()
-        self.initModel()
+        self.model = self.initModel()
 
     def initModel(self):
-        # init pipeline
-        model_id = "./tinyllava-v1.0-1.1b-hf"
-        self.pipe = pipeline("image-to-text", model=model_id)
+        client = OpenAI(base_url="http://localhost:8000/v1", api_key="sk-1234")
+        return client
 
     def initUI(self):
         # Initialize grid layout
@@ -598,7 +631,7 @@ class SearchVid(QWidget):
         
         for i in range(0, self.video.size(0), self.frames_to_skip):
             
-            task = SearchProcessorTask(self.video[i], self.pipe, self.prompt, i, self.fps, self.resultEmitter)
+            task = SearchProcessorTask(self.video[i], self.model, self.prompt, i, self.fps, self.resultEmitter)
             self.threadPool.start(task)
 
     def handleResult(self, result):
