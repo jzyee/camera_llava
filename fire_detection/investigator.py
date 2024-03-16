@@ -504,6 +504,7 @@ class SearchVid(QWidget):
         self.interval_seconds = 1
         num_workers = 4
         self.threadPool = QThreadPool()
+        self.threadPool.setMaxThreadCount(4) 
         self.initModel()
 
     def initModel(self):
@@ -616,7 +617,7 @@ class SearchVid(QWidget):
         for result in self.results:
             if result['pred']:
                 count += 1
-                self.addImageToImageLayout(result['frame'])
+                self.addImageToImageLayout(result['frame'], result['timestamp'])
 
         self.resultLabel.setText(f"Processed {len(self.results)} frames. {count} positive result(s) shown.")
 
@@ -624,7 +625,7 @@ class SearchVid(QWidget):
         self.results = []
         self.threadPool.waitForDone()
 
-    def addImageToImageLayout(self, image):
+    def addImageToImageLayout(self, image, timestamp):
         pilImage = image.convert("RGBA")
 
         original_size = pilImage.size
@@ -640,12 +641,28 @@ class SearchVid(QWidget):
                     )
         pixmap = QPixmap.fromImage(qim)
 
-        label = QLabel(self.scrollAreaWidgetContents)
-        label.setPixmap(pixmap)
-        self.foundImagesLayout.addWidget(label)
+        imageLabel = QLabel(self.scrollAreaWidgetContents)
+        imageLabel.setPixmap(pixmap)
+
+        # Create a label for the timestamp
+        timestampLabel = QLabel(self.scrollAreaWidgetContents)
+        timestampLabel.setText(f"Time: {timestamp:.2f}s")
+        # timestampLabel.setAlignment(Qt.AlignCenter)
+
+        # Create a vertical layout to stack the image and timestamp
+        layout = QVBoxLayout()
+        layout.addWidget(imageLabel)
+        layout.addWidget(timestampLabel)
+
+        # Create a container widget to hold the vertical layout
+        container = QWidget(self.scrollAreaWidgetContents)
+        container.setLayout(layout)
+
+        # Add the container to the horizontal layout
+        self.foundImagesLayout.addWidget(container)
 
         # Ensure the newly added image is visible
-        self.scrollArea.ensureWidgetVisible(label)
+        self.scrollArea.ensureWidgetVisible(container)
         
     def initVideoStream(self):
         # Initialize webcam as default video stream
