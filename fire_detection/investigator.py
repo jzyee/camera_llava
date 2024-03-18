@@ -139,8 +139,8 @@ class AlertWorker(QThread):
                     model="gpt-4-vision-preview",
                     messages=self.processed_prompt,
                     max_tokens=30,
-                    temperature=0.4,
-                    top_p=0.4
+                    temperature=0.1,
+                    top_p=0.1
                 )
                 # print(output)
                 # result = output
@@ -196,9 +196,23 @@ class AlertSystem(QWidget):
         self.toggleSwitch = QCheckBox("Enable Alert System")
         self.toggleSwitch.stateChanged.connect(self.toggleAlertSystem)
 
+        # Radio buttons for stream source selection
+        self.webcamRadio = QRadioButton("Webcam Stream")
+        self.webcamRadio.setChecked(True)
+        self.fileRadio = QRadioButton("File Stream")
+        self.streamConfigButton = QPushButton("Confirm Stream Source")
+        self.streamConfigButton.clicked.connect(self.confirmStreamSource)
+
+        # Adding radio buttons and the confirm button to a separate layout
+        self.sourceSelectionLayout = QHBoxLayout()
+        self.sourceSelectionLayout.addWidget(self.webcamRadio)
+        self.sourceSelectionLayout.addWidget(self.fileRadio)
+        self.sourceSelectionLayout.addWidget(self.streamConfigButton)
+
         # adding to the overall layout
         self.gridLayout.addWidget(self.bannerLabel)
         self.gridLayout.addWidget(self.toggleSwitch)
+        self.gridLayout.addLayout(self.sourceSelectionLayout)
         self.gridLayout.addWidget(self.alertWindow)
         self.gridLayout.addWidget(self.videoLabel)
         
@@ -206,7 +220,8 @@ class AlertSystem(QWidget):
 
         self.setLayout(self.gridLayout)
 
-        self.prompt = "Assume the role of a police officer. Be factual and precise. is there person in the center carrying a sharp object in his or her hand."
+        # self.prompt = "Assume the role of a police officer. Be factual and precise. is there person in the center carrying a sharp object in his or her hand."
+        self.prompt = "Assume the role of a police officer. Be factual and precise. is there a man breaking building premesis?"
 
     def initVideoStream(self):
         self.cap = cv2.VideoCapture(0)
@@ -233,6 +248,10 @@ class AlertSystem(QWidget):
                 if currentTime - self.lastProcessedTime >= self.samplingInterval:
                     self.predictWorker.add_frame(frame)
                     self.lastProcessedTime = currentTime
+        else:
+            self.cap.release()  # Stop the timer if the video ends when playing a file.
+            self.timer.stop()
+            # QMessageBox.information(self, "Video Ended", "The video file has ended.")
 
 
     def updateCaption(self, caption, timestamp):
@@ -268,9 +287,12 @@ class AlertSystem(QWidget):
         
     def confirmStreamSource(self):
         
-        fileName, _ = QFileDialog.getOpenFileName(self, "Open Video File", "", "Video Files (*.mp4 *.avi *.mov)")
-        if fileName:
-            self.useFile(fileName)
+        if self.fileRadio.isChecked():
+            fileName, _ = QFileDialog.getOpenFileName(self, "Open Video File", "", "Video Files (*.mp4 *.avi *.mov)")
+            if fileName:
+                self.useFile(fileName)
+        else:
+            self.useWebcam()
 
     def useWebcam(self):
         self.changeStreamSource(0)
@@ -285,6 +307,8 @@ class AlertSystem(QWidget):
         self.cap = cv2.VideoCapture(source)
         if self.cap.isOpened():
             self.timer.start(20)
+        else:
+            QMessageBox.warning(self, "Source Error", "Unable to open video source. Please try a different file or source.")
 
     def closeEvent(self, event):
         reply = QMessageBox.question(self, 'Window Close', 'Are you sure you want to close the window?',
@@ -470,7 +494,9 @@ class SearchProcessorTask(QRunnable):
 
     def process_prompt(self):
 
-        return f"USER: <image>\n{self.prompt} Reply with only yes or no\nASSISTANT:"
+        return f"""
+        USER: <image>\n{self.prompt} Reply with only yes or no only. \nASSISTANT:
+        """
 
     def run(self):
         
@@ -496,7 +522,7 @@ class SearchVid(QWidget):
     def __init__(self):
         super().__init__()
         self.initUI()
-        self.initVideoStream()
+        # self.initVideoStream()
         # self.model = self.initModel()
         self.evalFrame = None
         # init the list to store the frames
